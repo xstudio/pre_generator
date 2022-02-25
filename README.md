@@ -1,12 +1,31 @@
-# 项目介绍
-通用发号器，支持使用预定义值生成唯一趋势递增ID，以及发号反解等，可适用于各种排序分页场景。
-## 架构方案
+# Overview
+Generate generate number by predefined value, which has the same trend
 
-    使用预定义值发号，保证发号唯一，且随热度值单调递增，发号值作为游标，也就是说不同热度的发号值随发布时间单调递增，同一热度谁先谁后并不重要，重要的是唯一。
+## Architecture
+[README](https://blog.xstudio.mobi/a/203.html)
 
-    我们以常见的snowflake发号器为例，发号器由64字节组成，包含41字节毫秒时间戳 + 10字节机器ID + 12位毫秒内自增ID，在此基础上做些改进，高位增加37字节的热度值（最大可表示1300亿热度），最终会由100字节组成，为了防止出现float精度问题，100字节会转化为长度小于32的字符串，不足32长度，使用字符串“0”填充。 
-   
-    | 37bit pre | 41bit timestamp | 10bit nodeid | 12bit sequenceid |
+# Usage
+```go
+import (
+	"fmt"
 
-# 团队成员  
+	generator "github.com/xstudio/pre_generator"
+)
+
+func main() {
+	var pre int64 = 123
+	id := generator.New().Generate(pre)
+	fmt.Printf("ID stirng  ID: %s\n", id)
+
+	parsedPre, err := generator.New().ParseString(id.String())
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	fmt.Printf("parsed Pre is: %d\n", parsedPre)
+}
+```
+
+
+# Team
 * @xstudio

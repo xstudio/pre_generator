@@ -2,13 +2,17 @@
 // Use of this source code is governed by a BSD-style
 
 // Package service usage
-package service
+package generator
 
 import (
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
-func TestSnowFlake(t *testing.T) {
+var n = New()
+
+func TestSnowFlake_Generate(t *testing.T) {
 	type args struct {
 		pre int64
 	}
@@ -17,39 +21,53 @@ func TestSnowFlake(t *testing.T) {
 		args args
 	}{
 		{
-			name: "equal2",
-			args: args{pre: 1001},
+			name: "test1",
+			args: args{pre: 1234},
 		},
 		{
-			name: "equal2",
-			args: args{pre: 20032032},
+			name: "test2",
+			args: args{pre: 0},
 		},
 		{
-			name: "equal3",
-			args: args{pre: 20032032},
+			name: "test3",
+			args: args{pre: 1099511627775},
+		},
+		{
+			name: "test4",
+			args: args{pre: 8888888},
 		},
 	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			n := New()
-			got := n.Generate(tt.args.pre)
-			t.Logf("got: %v", got)
-
-			gotPre, gotTime, gotNode, gotStep, err := n.ParseString(got.String())
-			t.Logf("parsed: %v, %v, %v, %v", gotPre, gotTime, gotNode, gotStep)
-			if (err != nil) != false {
-				t.Errorf("ParseString() error = %v, wantErr %v", err, false)
-				return
-			}
-			if gotPre != tt.args.pre {
-				t.Errorf("ParseString() gotPre = %v, want %v", gotPre, tt.args.pre)
-			}
-			if gotTime <= 0 {
-				t.Errorf("ParseString() gotTime = %v, want > 0", gotTime)
-			}
-			if gotNode != 1 {
-				t.Errorf("ParseString() gotNode = %v, want 1", gotNode)
-			}
+			id := n.Generate(tt.args.pre)
+			pre, err := n.ParseString(id.String())
+			assert.NotEmpty(t, id)
+			assert.Nil(t, err)
+			assert.Equal(t, tt.args.pre, pre)
 		})
+	}
+}
+
+func TestGenerateDuplicateID(t *testing.T) {
+	var x, y ID
+	for i := 0; i < 1000000; i++ {
+		y = n.Generate(999)
+		if x == y {
+			t.Errorf("x(%s) & y(%s) are the same", x, y)
+		}
+		x = y
+	}
+}
+
+func BenchmarkGenerate(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		_ = n.Generate(9999999999)
+	}
+}
+
+func BenchmarkParseString(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		_, _ = n.ParseString("00000003e70003cd949200010000")
 	}
 }

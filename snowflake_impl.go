@@ -1,47 +1,45 @@
-package service
+package generator
 
 import (
+	"encoding/hex"
 	"errors"
-	"math"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
+)
 
-	"github.com/shopspring/decimal"
+const (
+	numBytes = 14
 )
 
 var (
-	// Epoch is set to the twitter snowflake epoch of Nov 04 2010 01:42:54 UTC in milliseconds
+	// Epoch is set to the twitter snowflake epoch of Feb 24 2022 20:04:31 UTC+8 in milliseconds
 	// You may customize this to set a different epoch for your application.
-	Epoch int64 = 1288834974657
+	Epoch int64 = 1645704271000
 
-	// NodeBits holds the number of bits to use for Node
-	// Remember, you have a total 22 bits to share between Node/Step
-	NodeBits uint8 = 10
+	// NodeBytes holds the number of bytes to use for Node
+	NodeBytes = 2 // 16bit
 
-	// StepBits holds the number of bits to use for Step
-	// Remember, you have a total 22 bits to share between Node/Step
-	StepBits uint8 = 12
+	// StepBytes holds the number of bytes to use for Step
+	StepBytes = 2 // 16bit
 
-	// TimeBits timestamp
-	TimeBits uint8 = 41
+	// TimeBytes timestamp, can use until 2056-12-28 15:58:18 UTC+8
+	TimeBytes = 5 // 40bit
 
-	// PreBits predifine high value
-	PreBits uint8 = 37
+	// PreBits predifine high value, max value is 1099511627775
+	PreBytes = 5 // 40bit
 
-	// TextLength text
-	TextLength int = 32
+	once      sync.Once
+	generator *SnowFlake
 )
 
-var once sync.Once
-var generator Generator
+var _ Generator = generator // implement check hint to compiler
 
 // New init
-var New = func() Generator {
+var New = func() *SnowFlake {
 	once.Do(func() {
 		var err error
-		generator, err = NewSnowFlake(1)
+		generator, err = NewSnowFlake(1) // default node id, TODO: support distributed
 		if err != nil {
 			panic(err)
 		}
@@ -50,7 +48,15 @@ var New = func() Generator {
 	return generator
 }
 
-// SnowFlake A Node struct holds the basic information needed for a snowflake generator
+// ID An ID is a custom type used for a snowflake ID.  This is used so we can
+// attach methods onto the ID.
+type ID string
+
+func (id ID) String() string {
+	return string(id)
+}
+
+// SnowFlake generator implement
 // node
 type SnowFlake struct {
 	mu    sync.Mutex
@@ -62,49 +68,39 @@ type SnowFlake struct {
 
 	stepMax int64
 
-	nodeShift uint8
-	timeShift uint8
-	preShift  uint8
+	preShift  int
+	stepShift int
+	nodeShift int
+	timeShift int
 
-	preMask  float64
-	timeMask float64
-	nodeMask float64
+	num [numBytes]byte
 }
 
-// ID An ID is a custom type used for a snowflake ID.  This is used so we can
-// attach methods onto the ID.
-type ID string
-
 // NewSnowFlake returns a new snowflake node that can be used to generate snowflake
-// IDs
 func NewSnowFlake(node int64) (*SnowFlake, error) {
 	n := SnowFlake{}
 	n.node = node
-	n.stepMax = (1 << StepBits) - 1
-	n.nodeShift = StepBits
-	n.timeShift = NodeBits + StepBits
-	n.preShift = NodeBits + StepBits + TimeBits
+	n.stepMax = (1 << (StepBytes * 8)) - 1
 
-	n.preMask = math.Pow(2, float64(n.preShift))
-	n.timeMask = math.Pow(2, float64(n.timeShift))
-	n.nodeMask = math.Pow(2, float64(n.nodeShift))
-
-	nodeMax := (1 << NodeBits) - 1
+	nodeMax := (1 << NodeBytes * 8) - 1
 	if n.node < 0 || n.node > int64(nodeMax) {
 		return nil, errors.New("Node number must be between 0 and " + strconv.Itoa(nodeMax))
 	}
 
-	var curTime = time.Now()
+	n.timeShift = PreBytes
+	n.nodeShift = PreBytes + TimeBytes
+	n.stepShift = PreBytes + TimeBytes + NodeBytes
+
+	curTime := time.Now()
 	// add time.Duration to curTime to make sure we use the monotonic clock if available
 	n.epoch = curTime.Add(time.Unix(Epoch/1000, (Epoch%1000)*1000000).Sub(curTime))
 
 	return &n, nil
 }
 
-// Generate 使用pre值生成发号（32位长度字符串 不足高位补0） 发号值随pre值递增/减
 func (n *SnowFlake) Generate(pre int64) ID {
-
 	n.mu.Lock()
+	n.num = [numBytes]byte{} // reset array
 
 	now := time.Since(n.epoch).Nanoseconds() / 1000000
 
@@ -123,48 +119,42 @@ func (n *SnowFlake) Generate(pre int64) ID {
 	n.time = now
 	n.pre = pre
 
-	r := ID(decimal.NewFromInt(n.pre).Mul(decimal.NewFromFloat(n.preMask)).
-		Add(decimal.NewFromInt(n.time).Mul(decimal.NewFromFloat(n.timeMask))).
-		Add(decimal.NewFromInt(n.node).Mul(decimal.NewFromFloat(n.nodeMask))).
-		Add(decimal.NewFromInt(n.step)).String())
+	// bigEndian int64 to custom size bytes
+	n.toBytes(n.preShift, PreBytes, n.pre)
+	n.toBytes(n.timeShift, TimeBytes, n.time)
+	n.toBytes(n.nodeShift, NodeBytes, n.node)
+	n.toBytes(n.stepShift, StepBytes, n.step)
+
+	// to hex string, alloc on stack
+	id := make([]byte, numBytes*2)
+	hex.Encode(id, n.num[:])
 
 	n.mu.Unlock()
 
-	return r
+	return ID(id)
 }
 
-// ParseString 解析发号的pre值，生成时间，节点id，毫秒内自增步长
-func (n *SnowFlake) ParseString(id string) (pre, time, node, step int64, err error) {
-	var idDecimal decimal.Decimal
-
-	idDecimal, err = decimal.NewFromString(id)
-	if err != nil {
-		return
+func (n *SnowFlake) toBytes(index, length int, v int64) {
+	for i := 0; i < length; i++ {
+		n.num[index+i] = byte(v >> ((length - i - 1) * 8))
 	}
-
-	preDecimal := idDecimal.Div(decimal.NewFromFloat(n.preMask))
-	pre = preDecimal.IntPart()
-
-	levelDecimal := idDecimal.Sub(decimal.NewFromInt(pre).Mul(decimal.NewFromFloat(n.preMask)))
-	timeDecimal := levelDecimal.Div(decimal.NewFromFloat(n.timeMask))
-	time = timeDecimal.IntPart()
-
-	levelDecimal = levelDecimal.Sub(decimal.NewFromInt(time).Mul(decimal.NewFromFloat(n.timeMask)))
-	nodeDecimal := levelDecimal.Div(decimal.NewFromFloat(n.nodeMask))
-	node = nodeDecimal.IntPart()
-
-	levelDecimal = levelDecimal.Sub(decimal.NewFromInt(node).Mul(decimal.NewFromFloat(n.nodeMask)))
-
-	step = levelDecimal.IntPart()
-
-	return
 }
 
-// String format
-func (f ID) String() string {
-	l, s := len(f), string(f)
-	if l < TextLength {
-		s = strings.Repeat("0", TextLength-l) + s
+func (n *SnowFlake) toInt64(num []byte, index, length int) int64 {
+	var v int64
+	for i := 0; i < length; i++ {
+		v |= int64(num[index+i]) << ((length - i - 1) * 8)
 	}
-	return s
+
+	return v
+}
+
+func (n *SnowFlake) ParseString(id string) (int64, error) {
+	num := make([]byte, numBytes) //  alloc on stack
+
+	if _, err := hex.Decode(num, []byte(id)); err != nil {
+		return 0, err
+	}
+
+	return n.toInt64(num, n.preShift, PreBytes), nil
 }
