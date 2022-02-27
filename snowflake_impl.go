@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"sync"
 	"time"
+	"unsafe"
 )
 
 const (
@@ -33,27 +34,41 @@ var (
 	generator *SnowFlake
 )
 
-var _ Generator = generator // implement check hint to compiler
+var (
+	_ Generator = generator // implement check hint to compiler
 
-// New init
-var New = func() *SnowFlake {
-	once.Do(func() {
-		var err error
-		generator, err = NewSnowFlake(1) // default node id, TODO: support distributed
-		if err != nil {
-			panic(err)
-		}
-	})
+	pool = sync.Pool{ // bytes pool for generate
+		New: func() interface{} {
+			b := make([]byte, numBytes*2)
+			return &b
+		},
+	}
 
-	return generator
-}
+	New = func() *SnowFlake {
+		once.Do(func() {
+			var err error
+			generator, err = NewSnowFlake(1) // default node id, TODO: support distributed
+			if err != nil {
+				panic(err)
+			}
+		})
+
+		return generator
+	}
+)
 
 // ID An ID is a custom type used for a snowflake ID.  This is used so we can
 // attach methods onto the ID.
-type ID string
+// nocopy can be embedded in a struct to help prevent shallow copies.
+// This does not rely on a Go language feature, but rather a special case
+// within the vet checker.
+type ID struct {
+	noCopy [0]sync.Mutex
+	id     string
+}
 
-func (id ID) String() string {
-	return string(id)
+func (i *ID) String() string {
+	return i.id
 }
 
 // SnowFlake generator implement
@@ -125,13 +140,14 @@ func (n *SnowFlake) Generate(pre int64) ID {
 	n.toBytes(n.nodeShift, NodeBytes, n.node)
 	n.toBytes(n.stepShift, StepBytes, n.step)
 
-	// to hex string, alloc on stack
-	id := make([]byte, numBytes*2)
-	hex.Encode(id, n.num[:])
+	// to hex string, id is the result variable, use bytes pool for 0 allocs/op
+	id := pool.Get().(*[]byte)
+	hex.Encode(*id, n.num[:])
+	pool.Put(id)
 
 	n.mu.Unlock()
 
-	return ID(id)
+	return ID{id: *(*string)(unsafe.Pointer(id))}
 }
 
 func (n *SnowFlake) toBytes(index, length int, v int64) {
@@ -150,8 +166,7 @@ func (n *SnowFlake) toInt64(num []byte, index, length int) int64 {
 }
 
 func (n *SnowFlake) ParseString(id string) (int64, error) {
-	num := make([]byte, numBytes) //  alloc on stack
-
+	num := make([]byte, numBytes) // num is tmp variable, 0 heap allocs/op, unnecessary use bytes pool
 	if _, err := hex.Decode(num, []byte(id)); err != nil {
 		return 0, err
 	}

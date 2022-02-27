@@ -6,6 +6,7 @@ package generator
 
 import (
 	"testing"
+	"unsafe"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -40,8 +41,9 @@ func TestSnowFlake_Generate(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			id := n.Generate(tt.args.pre)
-			pre, err := n.ParseString(id.String())
+			id1 := n.Generate(tt.args.pre)
+			id := id1.String()
+			pre, err := n.ParseString(id)
 			assert.NotEmpty(t, id)
 			assert.Nil(t, err)
 			assert.Equal(t, tt.args.pre, pre)
@@ -49,14 +51,31 @@ func TestSnowFlake_Generate(t *testing.T) {
 	}
 }
 
-func TestGenerateDuplicateID(t *testing.T) {
+func TestGenerateDuplicateID_Nocopy(t *testing.T) {
 	var x, y ID
-	for i := 0; i < 1000000; i++ {
-		y = n.Generate(999)
-		if x == y {
-			t.Errorf("x(%s) & y(%s) are the same", x, y)
+	for i := 0; i < 2; i++ {
+		y = n.Generate(99)
+		if sx, sy := x.String(), y.String(); i > 0 && sx != sy {
+			t.Errorf("x(%s) & y(%s) are the same", sx, sy)
 		}
 		x = y
+	}
+}
+
+func clone(s ID) ID {
+	b := make([]byte, len(s.String()))
+	copy(b, s.String())
+	return ID{id: *(*string)(unsafe.Pointer(&b))}
+}
+
+func TestGenerateDuplicateID(t *testing.T) {
+	var x, y ID
+	for i := 0; i < 2; i++ {
+		y = n.Generate(99)
+		if sx, sy := x.String(), y.String(); sx == sy {
+			t.Errorf("x(%s) & y(%s) are the same", sx, sy)
+		}
+		x = clone(y)
 	}
 }
 
